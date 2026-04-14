@@ -156,7 +156,13 @@
 
     const leaveBtn = document.createElement('div');
     leaveBtn.style.cssText = "display:none; align-items:center; gap:6px; cursor:pointer; padding:5px 10px; border-radius:6px; border:1px solid #3f1f1f; background:#1a0a0a;";
-    leaveBtn.innerHTML = `<span style="font-size:11px; color:#ff3b30; font-weight:bold; letter-spacing:1px;">LEAVE</span><span style="font-size:13px;">🚪</span>`;
+    const leaveText = document.createElement('span');
+    leaveText.style.cssText = "font-size:11px; color:#ff3b30; font-weight:bold; letter-spacing:1px;";
+    leaveText.textContent = "LEAVE";
+    const leaveDoor = document.createElement('span');
+    leaveDoor.style.cssText = "font-size:13px;";
+    leaveDoor.textContent = "🚪";
+    leaveBtn.append(leaveText, leaveDoor);
     leaveBtn.onmouseover = () => leaveBtn.style.background = "#2a0a0a";
     leaveBtn.onmouseout = () => leaveBtn.style.background = "#1a0a0a";
     leaveBtn.onclick = () => {
@@ -350,7 +356,13 @@
         toastDot.style.cssText = "width:8px; height:8px; border-radius:50%; background:#ff5f1f; flex-shrink:0;";
         const toastText = document.createElement('div');
         toastText.style.cssText = "font-size:12px; color:#e2e8f0; line-height:1.5;";
-        toastText.innerHTML = `<span style="color:#ff5f1f; font-weight:bold;">${senderName}</span> wants to play <span style="color:#ff5f1f; font-weight:bold;">${gameName}</span>`;
+        const span1 = document.createElement('span');
+        span1.style.cssText = "color:#ff5f1f; font-weight:bold;";
+        span1.textContent = senderName;
+        const span2 = document.createElement('span');
+        span2.style.cssText = "color:#ff5f1f; font-weight:bold;";
+        span2.textContent = gameName;
+        toastText.append(span1, " wants to play ", span2);
         toastTop.append(toastDot, toastText);
         const toastBtns = document.createElement('div');
         toastBtns.style.cssText = "display:flex; gap:8px;";
@@ -429,7 +441,7 @@
         stopRPS();
         peerName = null;
         dot.style.background = "#3f3f46"; dot.style.boxShadow = "none";
-        unreadCount = 0; badge.style.display = "none"; mB.innerHTML = "";
+        unreadCount = 0; badge.style.display = "none"; while (mB.firstChild) mB.removeChild(mB.firstChild);
         hideToast();
         if (dc) { try { dc.close(); } catch (e) { } dc = null; }
         try { pc.close(); } catch (e) { }
@@ -1406,9 +1418,9 @@
     const RPS_WINS_OVER = { R: 'S', P: 'R', S: 'P' };
 
     // Shake timing constants
-    const RPS_BEAT_MS   = 420;  // duration of one pump beat
-    const RPS_BEATS     = 4;    // 3 pumps + shoot
-    const RPS_TOTAL_MS  = RPS_BEAT_MS * RPS_BEATS; // 1680 ms
+    const RPS_BEAT_MS = 420;  // duration of one pump beat
+    const RPS_BEATS = 4;    // 3 pumps + shoot
+    const RPS_TOTAL_MS = RPS_BEAT_MS * RPS_BEATS; // 1680 ms
 
     const rpsInitState = (keepScores) => ({
         hostChoice: null,
@@ -1450,9 +1462,9 @@
             const px = pipStartX + i * pipSpacing;
             rctx.beginPath();
             rctx.arc(px, 18, pipR, 0, Math.PI * 2);
-            if (i < state.scores[myKey])             rctx.fillStyle = "#ff5f1f";
+            if (i < state.scores[myKey]) rctx.fillStyle = "#ff5f1f";
             else if (i >= 5 - state.scores[theirKey]) rctx.fillStyle = "#3b82f6";
-            else                                       rctx.fillStyle = "#27272a";
+            else rctx.fillStyle = "#27272a";
             rctx.fill();
         }
 
@@ -1503,15 +1515,15 @@
         rctx.fillStyle = "#0a0a0c";
         rctx.fillRect(0, 0, W, H);
 
-        const myKey    = isHost ? 'host' : 'joiner';
+        const myKey = isHost ? 'host' : 'joiner';
         const theirKey = isHost ? 'joiner' : 'host';
 
         rpsDrawHeader(state);
 
         // ── CHOOSE phase ──────────────────────────────────────────
         if (state.phase === 'choose') {
-            const myChoice    = state[myKey + 'Choice'];
-            const theirReady  = state[theirKey + 'Ready'];
+            const myChoice = state[myKey + 'Choice'];
+            const theirReady = state[theirKey + 'Ready'];
 
             // VS label
             rctx.font = "bold 14px 'Segoe UI'";
@@ -1560,11 +1572,11 @@
                 rctx.fillText(RPS_LABEL[btn.key], btn.x, RPS_BTN_Y + 46);
             });
 
-        // ── SHAKE phase ───────────────────────────────────────────
+            // ── SHAKE phase ───────────────────────────────────────────
         } else if (state.phase === 'shake') {
-            const elapsed  = now - (state.shakeStartTime || now);
-            const beatF    = Math.min(elapsed / RPS_BEAT_MS, RPS_BEATS); // 0 → 4
-            const beatIdx  = Math.min(Math.floor(beatF), RPS_BEATS - 1); // 0–3
+            const elapsed = now - (state.shakeStartTime || now);
+            const beatF = Math.min(elapsed / RPS_BEAT_MS, RPS_BEATS); // 0 → 4
+            const beatIdx = Math.min(Math.floor(beatF), RPS_BEATS - 1); // 0–3
             const beatProg = beatF - beatIdx;                             // 0→1 within beat
 
             // Pump curve: down on first half, up on second half (ease in-out)
@@ -1596,7 +1608,7 @@
             rctx.globalAlpha = 1;
 
             // Both fists pump in unison
-            rpsDrawHand(null, 145,     H / 2 - 10, { revealed: false, yOffset, dimmed: false });
+            rpsDrawHand(null, 145, H / 2 - 10, { revealed: false, yOffset, dimmed: false });
             rpsDrawHand(null, W - 145, H / 2 - 10, { revealed: false, yOffset, dimmed: false });
 
             // Subtle divider
@@ -1605,24 +1617,24 @@
             rctx.textAlign = "center";
             rctx.fillText("VS", W / 2, H / 2 + 8);
 
-        // ── REVEAL / RESULT phase ─────────────────────────────────
+            // ── REVEAL / RESULT phase ─────────────────────────────────
         } else if (state.phase === 'reveal' || state.phase === 'result') {
-            const hChoice    = state.hostChoice;
-            const jChoice    = state.joinerChoice;
-            const leftChoice  = isHost ? hChoice : jChoice;
+            const hChoice = state.hostChoice;
+            const jChoice = state.joinerChoice;
+            const leftChoice = isHost ? hChoice : jChoice;
             const rightChoice = isHost ? jChoice : hChoice;
 
             // revealProgress drives the scale pop (0 → 1 over ~300ms)
             // We store rpsRevealStart locally (set when phase first becomes 'reveal')
             const elapsed = now - (rpsRevealStart || now);
-            const popT    = Math.min(elapsed / 320, 1);
+            const popT = Math.min(elapsed / 320, 1);
             // Overshoot spring: goes to 1.15 then settles at 1
-            const spring  = popT < 0.6
+            const spring = popT < 0.6
                 ? (popT / 0.6) * 1.18
                 : 1.18 - (((popT - 0.6) / 0.4)) * 0.18;
             const revealScale = Math.max(0.01, spring);
 
-            rpsDrawHand(leftChoice,  145,     H / 2 - 20, { revealed: true, revealScale });
+            rpsDrawHand(leftChoice, 145, H / 2 - 20, { revealed: true, revealScale });
             rpsDrawHand(rightChoice, W - 145, H / 2 - 20, { revealed: true, revealScale });
 
             // Round result banner (fades in with pop)
@@ -1630,9 +1642,9 @@
                 const bannerAlpha = Math.min((popT - 0.3) / 0.3, 1);
                 rctx.globalAlpha = bannerAlpha;
                 let resultText, resultColor;
-                if (state.roundWinner === 'draw')       { resultText = "DRAW";      resultColor = "#a1a1aa"; }
-                else if (state.roundWinner === myKey)    { resultText = "YOU WIN!";  resultColor = "#ff5f1f"; }
-                else                                     { resultText = "YOU LOSE";  resultColor = "#3b82f6"; }
+                if (state.roundWinner === 'draw') { resultText = "DRAW"; resultColor = "#a1a1aa"; }
+                else if (state.roundWinner === myKey) { resultText = "YOU WIN!"; resultColor = "#ff5f1f"; }
+                else { resultText = "YOU LOSE"; resultColor = "#3b82f6"; }
                 rctx.font = "bold 22px 'Segoe UI'";
                 rctx.textAlign = "center";
                 rctx.textBaseline = "alphabetic";
@@ -1670,7 +1682,7 @@
 
     // Track when reveal phase started (local only, for pop animation)
     let rpsRevealStart = null;
-    let rpsPrevPhase   = null;
+    let rpsPrevPhase = null;
 
     const rpsRenderLoop = () => {
         const now = performance.now();
@@ -2131,7 +2143,10 @@
     //  SIDEBAR ICON CLICKS
     // ============================================================
 
-    iG.onclick = () => setTab(isConnected() ? gameV : lockedV, iG);
+    iG.onclick = () => {
+        if (currentGame !== null) return;
+        setTab(isConnected() ? gameV : lockedV, iG);
+    };
     iC.onclick = () => {
         const inGame = currentGame !== null;
         if (inGame) {

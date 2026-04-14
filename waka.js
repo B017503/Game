@@ -87,10 +87,6 @@
     // ============================================================
     //  ROCK PAPER SCISSORS STATE
     // ============================================================
-    // host = left side, joiner = right side
-    // choices: 'R' (rock), 'P' (paper), 'S' (scissors)
-    // phase: 'choose' | 'countdown' | 'reveal' | 'result'
-    // seriesWinner: null | 'host' | 'joiner' — set when someone reaches 3 wins
 
     let rpsState = {
         myChoice: null,
@@ -98,7 +94,7 @@
         phase: 'choose',
         scores: { host: 0, joiner: 0 },
         round: 1,
-        roundWinner: null,   // null | 'host' | 'joiner' | 'draw'
+        roundWinner: null,
         seriesWinner: null,
         countdown: 0,
         animFrame: null,
@@ -108,6 +104,66 @@
         hostReady: false,
         joinerReady: false,
     };
+
+    // ============================================================
+    //  MEMORY (SIMON) STATE
+    // ============================================================
+
+    const MEM_COLORS = ['#ff3b30', '#30d158', '#0a84ff', '#ffd60a'];
+    const MEM_DARK = ['#4a0a07', '#0a2e10', '#021a3a', '#3a2e00'];
+    const MEM_GLOW = ['rgba(255,59,48,0.55)', 'rgba(48,209,88,0.55)', 'rgba(10,132,255,0.55)', 'rgba(255,214,10,0.55)'];
+    const MEM_LABELS = ['RED', 'GREEN', 'BLUE', 'YELLOW'];
+    const MEM_SHOW_MS = 550;   // how long each tile lights up
+    const MEM_GAP_MS = 160;   // gap between tiles during show
+    const MEM_WIN_SCORE = 5;
+
+    // Simon-style arc quadrant layout
+    const MEM_CENTER_X = W / 2;
+    const MEM_CENTER_Y = H / 2 + 14;
+    const MEM_OUTER_R = 112;
+    const MEM_INNER_R = 36;
+    const MEM_GAP_ANG = 0.055;
+
+    // Quadrant order: 0=red(TL), 1=green(TR), 2=blue(BL), 3=yellow(BR)
+    const MEM_QUADS = [
+        { idx: 0, startAng: Math.PI, endAng: Math.PI * 1.5 },
+        { idx: 1, startAng: Math.PI * 1.5, endAng: Math.PI * 2 },
+        { idx: 2, startAng: Math.PI * 0.5, endAng: Math.PI },
+        { idx: 3, startAng: 0, endAng: Math.PI * 0.5 },
+    ];
+
+    // Hit-test: is point (px,py) inside quadrant arc?
+    const memQuadHit = (q, px, py) => {
+        const dx = px - MEM_CENTER_X, dy = py - MEM_CENTER_Y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MEM_INNER_R || dist > MEM_OUTER_R) return false;
+        let ang = Math.atan2(dy, dx);
+        if (ang < 0) ang += Math.PI * 2;
+        let s = q.startAng + MEM_GAP_ANG, e = q.endAng - MEM_GAP_ANG;
+        if (s > e) { s -= Math.PI * 2; if (ang > Math.PI) ang -= Math.PI * 2; }
+        return ang >= s && ang <= e;
+    };
+
+    const memInitState = (keepScores) => ({
+        sequence: [],
+        phase: 'waiting',           // waiting | showing | input | correct | wrong | roundover | gameover
+        activePlayer: 'host',       // whose turn to input
+        inputIndex: 0,
+        litIdx: -1,                 // which button is currently lit during 'showing'
+        showStep: 0,                // which step in sequence we're showing
+        scores: keepScores || { host: 0, joiner: 0 },
+        winner: null,
+        restartCountdown: null,
+        flashColor: null,           // 'good' | 'bad' — for feedback flash
+        flashTimer: 0,
+        message: 'PRESS START',
+    });
+
+    let memState = null; // initialised below after memInitState is defined
+    let memAnimFrame = null;
+    let memShowTimer = null;
+    let memRestartTimer = null;
+    let memHoverBtn = -1;
 
     const isConnected = () => dc && dc.readyState === "open";
 
@@ -172,6 +228,7 @@
         if (currentGame === 'ttt') stopTTT();
         if (currentGame === 'c4') stopC4();
         if (currentGame === 'rps') stopRPS();
+        if (currentGame === 'memory') stopMemory();
         setTab(gameV, iG);
     };
 
@@ -201,11 +258,16 @@
     c4C.style.cssText = "display:none; background:#000; cursor:pointer;";
     const c4ctx = c4C.getContext('2d');
 
-    // RPS canvas
     const rpsC = document.createElement('canvas');
     rpsC.width = W; rpsC.height = H;
     rpsC.style.cssText = "display:none; background:#000; cursor:pointer;";
     const rctx = rpsC.getContext('2d');
+
+    // Memory canvas
+    const memC = document.createElement('canvas');
+    memC.width = W; memC.height = H;
+    memC.style.cssText = "display:none; background:#000; cursor:pointer;";
+    const mctx = memC.getContext('2d');
 
     const chatV = document.createElement('div');
     chatV.style.cssText = "position:absolute; inset:40px 0 0 0; display:none; flex-direction:column; padding:15px; overflow:hidden; background:rgba(10,10,12,0.92); backdrop-filter:blur(4px); z-index:5;";
@@ -264,7 +326,8 @@
     const { tile: tttTile } = makeTile("✖️", "Tic Tac Toe");
     const { tile: c4Tile } = makeTile("🔴", "Connect 4");
     const { tile: rpsTile } = makeTile("✊", "RPS");
-    gamesGrid.append(pongTile, snakeTile, tttTile, c4Tile, rpsTile);
+    const { tile: memTile } = makeTile("🧠", "Memory");
+    gamesGrid.append(pongTile, snakeTile, tttTile, c4Tile, rpsTile, memTile);
     gameV.append(gameVTitle, gamesGrid);
 
     const waitV = document.createElement('div');
@@ -333,7 +396,7 @@
     postConn.append(connCard, bDisc);
     setV.append(preConn, postConn);
 
-    main.append(header, pongC, snakeC, tttC, c4C, rpsC, chatV, lockedV, gameV, waitV, setV);
+    main.append(header, pongC, snakeC, tttC, c4C, rpsC, memC, chatV, lockedV, gameV, waitV, setV);
     ui.append(side, main);
     document.body.appendChild(ui);
 
@@ -403,11 +466,11 @@
     //  TAB SWITCHING
     // ============================================================
 
-    const allViews = () => [pongC, snakeC, tttC, c4C, rpsC, chatV, lockedV, gameV, waitV, setV];
+    const allViews = () => [pongC, snakeC, tttC, c4C, rpsC, memC, chatV, lockedV, gameV, waitV, setV];
     const allIcons = () => [iG, iC, iS];
 
     const setTab = (view, icon) => {
-        if ((view === pongC || view === snakeC || view === tttC || view === c4C || view === rpsC || view === chatV || view === gameV || view === waitV) && !isConnected()) {
+        if ((view === pongC || view === snakeC || view === tttC || view === c4C || view === rpsC || view === memC || view === chatV || view === gameV || view === waitV) && !isConnected()) {
             allViews().forEach(v => v.style.display = "none");
             allIcons().forEach(i => { i.style.opacity = "0.4"; i.setAttribute('active', 'false'); });
             lockedV.style.display = "flex";
@@ -417,7 +480,7 @@
         }
         allViews().forEach(v => v.style.display = "none");
         allIcons().forEach(i => { i.style.opacity = "0.4"; i.setAttribute('active', 'false'); });
-        const isCanvas = view === pongC || view === snakeC || view === tttC || view === c4C || view === rpsC;
+        const isCanvas = view === pongC || view === snakeC || view === tttC || view === c4C || view === rpsC || view === memC;
         view.style.display = isCanvas ? "block" : "flex";
         if (icon) { icon.style.opacity = "1"; icon.setAttribute('active', 'true'); }
         if (view === chatV) { unreadCount = 0; badge.style.display = "none"; }
@@ -439,6 +502,7 @@
         stopTTT();
         stopC4();
         stopRPS();
+        stopMemory();
         peerName = null;
         dot.style.background = "#3f3f46"; dot.style.boxShadow = "none";
         unreadCount = 0; badge.style.display = "none"; while (mB.firstChild) mB.removeChild(mB.firstChild);
@@ -1393,34 +1457,15 @@
     // ============================================================
     //  ROCK PAPER SCISSORS
     // ============================================================
-    // Protocol: prefix "R" for full state sync (host → joiner)
-    //           prefix "RM" for joiner's choice (joiner → host)
-    // host drives all logic. Best-of-5 (first to 3 wins).
-    //
-    // Phases:
-    //   'choose'  — both players pick
-    //   'shake'   — fist-pump animation: Rock… Paper… Scissors… SHOOT!
-    //   'reveal'  — chosen signs pop in with scale animation
-    //   'result'  — series winner screen
-    //
-    // Shake animation (pure client-side, driven by rpsAnimStart timestamp):
-    //   Total duration ≈ 1600 ms, split into 4 beats × 400 ms each.
-    //   Beat 0–2: fist pumps down then up  ("Rock / Paper / Scissors")
-    //   Beat 3:   fist slams DOWN and stays — then phase flips to 'reveal'
-    //   The host sets rpsState.shakeStartTime = Date.now() and broadcasts;
-    //   both clients animate locally off that absolute timestamp so they stay
-    //   perfectly in sync without any further messages during the shake.
-    // ============================================================
 
     const RPS_EMOJI = { R: '✊', P: '🖐', S: '✌️' };
     const RPS_LABEL = { R: 'ROCK', P: 'PAPER', S: 'SCISSORS' };
     const RPS_BEAT_WORDS = ['ROCK...', 'PAPER...', 'SCISSORS...', 'SHOOT!'];
     const RPS_WINS_OVER = { R: 'S', P: 'R', S: 'P' };
 
-    // Shake timing constants
-    const RPS_BEAT_MS = 420;  // duration of one pump beat
-    const RPS_BEATS = 4;    // 3 pumps + shoot
-    const RPS_TOTAL_MS = RPS_BEAT_MS * RPS_BEATS; // 1680 ms
+    const RPS_BEAT_MS = 420;
+    const RPS_BEATS = 4;
+    const RPS_TOTAL_MS = RPS_BEAT_MS * RPS_BEATS;
 
     const rpsInitState = (keepScores) => ({
         hostChoice: null,
@@ -1433,7 +1478,7 @@
         round: 1,
         restartCountdown: null,
         scores: keepScores || { host: 0, joiner: 0 },
-        shakeStartTime: null,   // absolute ms timestamp set when shake begins
+        shakeStartTime: null,
     });
 
     const rpsResolveRound = (state) => {
@@ -1442,7 +1487,6 @@
         return RPS_WINS_OVER[h] === j ? 'host' : 'joiner';
     };
 
-    // ---- shared header / scorebar drawn on every frame ----
     const rpsDrawHeader = (state) => {
         const myKey = isHost ? 'host' : 'joiner';
         const theirKey = isHost ? 'joiner' : 'host';
@@ -1455,7 +1499,6 @@
         rctx.fillStyle = "#3b82f6";
         rctx.fillText(`${state.scores[theirKey]}  ${peerName || 'PEER'}`, W - 14, 20);
 
-        // Best-of-5 pip row
         const pipR = 5, pipSpacing = 16;
         const pipStartX = W / 2 - (4 * pipSpacing) / 2;
         for (let i = 0; i < 5; i++) {
@@ -1474,17 +1517,12 @@
         rctx.fillText(`ROUND ${state.round}  •  FIRST TO 3`, W / 2, 38);
     };
 
-    // ---- draw one hand (fist or revealed sign) ----
-    // yOffset: vertical displacement from centre (used for shake bounce)
-    // revealScale: 0→1 pop-in scale (used during reveal phase)
-    // dimmed: bool — draw at low opacity (hidden/waiting state)
     const rpsDrawHand = (choice, cx, cy, { yOffset = 0, revealScale = 1, dimmed = false, revealed = true } = {}) => {
         rctx.save();
         rctx.translate(cx, cy + yOffset);
         rctx.scale(revealScale, revealScale);
         if (dimmed) rctx.globalAlpha = 0.22;
 
-        // Always draw fist during shake; draw choice after reveal
         const emoji = revealed ? (RPS_EMOJI[choice] || '✊') : '✊';
         rctx.font = "64px serif";
         rctx.textAlign = "center";
@@ -1501,7 +1539,6 @@
         rctx.restore();
     };
 
-    // Choice button layout
     const RPS_BTN_Y = H - 68;
     const RPS_BTN_W = 80, RPS_BTN_H = 52;
     const RPS_BTNS = [
@@ -1510,7 +1547,6 @@
         { key: 'S', x: W / 2 + 110 },
     ];
 
-    // ---- main draw function ----
     const rpsDraw = (state, now) => {
         rctx.fillStyle = "#0a0a0c";
         rctx.fillRect(0, 0, W, H);
@@ -1520,18 +1556,15 @@
 
         rpsDrawHeader(state);
 
-        // ── CHOOSE phase ──────────────────────────────────────────
         if (state.phase === 'choose') {
             const myChoice = state[myKey + 'Choice'];
             const theirReady = state[theirKey + 'Ready'];
 
-            // VS label
             rctx.font = "bold 14px 'Segoe UI'";
             rctx.fillStyle = "#27272a";
             rctx.textAlign = "center";
             rctx.fillText("VS", W / 2, H / 2 + 8);
 
-            // My hand (left)
             rpsDrawHand(myChoice, 145, H / 2 - 10, { revealed: false, dimmed: !myChoice });
             rctx.font = "bold 11px 'Segoe UI'";
             rctx.textAlign = "center";
@@ -1544,14 +1577,12 @@
                 rctx.fillText("CHOOSE BELOW", 145, H / 2 + 60);
             }
 
-            // Their hand (right)
             rpsDrawHand(null, W - 145, H / 2 - 10, { revealed: false, dimmed: true });
             rctx.font = "bold 11px 'Segoe UI'";
             rctx.textAlign = "center";
             rctx.fillStyle = theirReady ? "#22c55e" : "#52525b";
             rctx.fillText(theirReady ? "✓ READY" : "WAITING...", W - 145, H / 2 + 60);
 
-            // Choice buttons
             RPS_BTNS.forEach(btn => {
                 const bx = btn.x - RPS_BTN_W / 2;
                 const isSelected = myChoice === btn.key;
@@ -1572,29 +1603,23 @@
                 rctx.fillText(RPS_LABEL[btn.key], btn.x, RPS_BTN_Y + 46);
             });
 
-            // ── SHAKE phase ───────────────────────────────────────────
         } else if (state.phase === 'shake') {
             const elapsed = now - (state.shakeStartTime || now);
-            const beatF = Math.min(elapsed / RPS_BEAT_MS, RPS_BEATS); // 0 → 4
-            const beatIdx = Math.min(Math.floor(beatF), RPS_BEATS - 1); // 0–3
-            const beatProg = beatF - beatIdx;                             // 0→1 within beat
+            const beatF = Math.min(elapsed / RPS_BEAT_MS, RPS_BEATS);
+            const beatIdx = Math.min(Math.floor(beatF), RPS_BEATS - 1);
+            const beatProg = beatF - beatIdx;
 
-            // Pump curve: down on first half, up on second half (ease in-out)
-            // beatIdx 0-2 = pump; beatIdx 3 = final slam DOWN (stays down)
             let yOffset;
             if (beatIdx < 3) {
-                // smooth bounce: down then back up
                 const t = beatProg < 0.5
                     ? 2 * beatProg * beatProg
                     : 1 - Math.pow(-2 * beatProg + 2, 2) / 2;
-                yOffset = Math.sin(t * Math.PI) * 28; // peak displacement downward
+                yOffset = Math.sin(t * Math.PI) * 28;
             } else {
-                // final slam — accelerate downward and hold
                 const t = Math.min(beatProg * 2.5, 1);
                 yOffset = t * t * 32;
             }
 
-            // Beat word ("ROCK..." / "PAPER..." / "SCISSORS..." / "SHOOT!")
             const word = RPS_BEAT_WORDS[beatIdx];
             const wordAlpha = beatIdx < 3
                 ? Math.min(beatProg * 4, 1) * (1 - Math.max((beatProg - 0.6) / 0.4, 0))
@@ -1607,28 +1632,22 @@
             rctx.fillText(word, W / 2, H / 2 + 70);
             rctx.globalAlpha = 1;
 
-            // Both fists pump in unison
             rpsDrawHand(null, 145, H / 2 - 10, { revealed: false, yOffset, dimmed: false });
             rpsDrawHand(null, W - 145, H / 2 - 10, { revealed: false, yOffset, dimmed: false });
 
-            // Subtle divider
             rctx.font = "bold 14px 'Segoe UI'";
             rctx.fillStyle = "#1f1f23";
             rctx.textAlign = "center";
             rctx.fillText("VS", W / 2, H / 2 + 8);
 
-            // ── REVEAL / RESULT phase ─────────────────────────────────
         } else if (state.phase === 'reveal' || state.phase === 'result') {
             const hChoice = state.hostChoice;
             const jChoice = state.joinerChoice;
             const leftChoice = isHost ? hChoice : jChoice;
             const rightChoice = isHost ? jChoice : hChoice;
 
-            // revealProgress drives the scale pop (0 → 1 over ~300ms)
-            // We store rpsRevealStart locally (set when phase first becomes 'reveal')
             const elapsed = now - (rpsRevealStart || now);
             const popT = Math.min(elapsed / 320, 1);
-            // Overshoot spring: goes to 1.15 then settles at 1
             const spring = popT < 0.6
                 ? (popT / 0.6) * 1.18
                 : 1.18 - (((popT - 0.6) / 0.4)) * 0.18;
@@ -1637,7 +1656,6 @@
             rpsDrawHand(leftChoice, 145, H / 2 - 20, { revealed: true, revealScale });
             rpsDrawHand(rightChoice, W - 145, H / 2 - 20, { revealed: true, revealScale });
 
-            // Round result banner (fades in with pop)
             if (state.roundWinner && popT > 0.3) {
                 const bannerAlpha = Math.min((popT - 0.3) / 0.3, 1);
                 rctx.globalAlpha = bannerAlpha;
@@ -1653,13 +1671,11 @@
                 rctx.globalAlpha = 1;
             }
 
-            // VS divider (subtle)
             rctx.font = "bold 13px 'Segoe UI'";
             rctx.fillStyle = "#1f1f23";
             rctx.textAlign = "center";
             rctx.fillText("VS", W / 2, H / 2 + 8);
 
-            // Series winner overlay
             if (state.seriesWinner) {
                 rctx.fillStyle = "rgba(0,0,0,0.75)";
                 rctx.fillRect(0, 0, W, H);
@@ -1680,14 +1696,12 @@
         }
     };
 
-    // Track when reveal phase started (local only, for pop animation)
     let rpsRevealStart = null;
     let rpsPrevPhase = null;
 
     const rpsRenderLoop = () => {
         const now = performance.now();
 
-        // Detect phase transition → reveal: record start time for pop
         if (rpsState.phase === 'reveal' && rpsPrevPhase !== 'reveal' && rpsPrevPhase !== 'result') {
             rpsRevealStart = now;
         }
@@ -1697,7 +1711,6 @@
         rpsState.animFrame = requestAnimationFrame(rpsRenderLoop);
     };
 
-    // Host: both ready → kick off shake phase (timing driven by shakeStartTime)
     const rpsCheckBothReady = () => {
         if (!isHost) return;
         if (!rpsState.hostReady || !rpsState.joinerReady) return;
@@ -1707,7 +1720,6 @@
         rpsState.shakeStartTime = performance.now();
         if (isConnected()) dc.send("R" + JSON.stringify(rpsState));
 
-        // After the full shake animation completes, flip to reveal
         rpsState.restartTimer = setTimeout(() => {
             rpsState.phase = 'reveal';
             rpsState.roundWinner = rpsResolveRound(rpsState);
@@ -1719,7 +1731,6 @@
             }
             if (isConnected()) dc.send("R" + JSON.stringify(rpsState));
 
-            // Schedule next round / new series
             const nextDelay = rpsState.seriesWinner ? 1000 : 2200;
             rpsState.restartCountdown = rpsState.seriesWinner ? 3 : null;
 
@@ -1741,14 +1752,14 @@
                 if (isConnected()) dc.send("R" + JSON.stringify(rpsState));
             };
             rpsState.restartTimer = setTimeout(nextTick, nextDelay);
-        }, RPS_TOTAL_MS + 80); // slight buffer after last beat
+        }, RPS_TOTAL_MS + 80);
     };
 
     const rpsPickChoice = (choice) => {
         if (currentGame !== 'rps') return;
         if (rpsState.phase !== 'choose') return;
         const myKey = isHost ? 'host' : 'joiner';
-        if (rpsState[myKey + 'Ready']) return; // already locked in
+        if (rpsState[myKey + 'Ready']) return;
 
         rpsState[myKey + 'Choice'] = choice;
         rpsState[myKey + 'Ready'] = true;
@@ -1790,7 +1801,6 @@
         if (currentGame === 'rps') { currentGame = null; leaveBtn.style.display = "none"; }
     };
 
-    // Click handler for the RPS canvas — hit test choice buttons
     rpsC.onclick = (e) => {
         if (currentGame !== 'rps') return;
         if (rpsState.phase !== 'choose') return;
@@ -1829,6 +1839,441 @@
     };
 
     // ============================================================
+    //  MEMORY (SIMON SAYS)
+    // ============================================================
+    //
+    // Two-player competitive Simon Says.
+    // Host drives all logic. Protocol prefix "ME" for full state
+    // sync (host → joiner), "MEB" for joiner button press.
+    //
+    // Rules:
+    //  - Host starts by clicking START
+    //  - Sequence grows by 1 each successful turn
+    //  - Players alternate: if the active player successfully
+    //    repeats the sequence they score 1 point, then the
+    //    other player must repeat the SAME sequence (now +1 step)
+    //  - Actually simpler: players alternate turns. Each turn,
+    //    host adds one colour to sequence, active player must
+    //    repeat whole sequence. Wrong = other player gets a point.
+    //    First to MEM_WIN_SCORE wins the series.
+    //  - After each wrong press, scores update and new round starts
+    //    (fresh sequence of length 1, other player's turn to input)
+    // ============================================================
+
+    // Initialise memState now that memInitState is defined (declared earlier)
+    memState = memInitState();
+
+    // Draw one coloured button with optional lit/hover state
+    const memDrawQuad = (q, lit, hovered) => {
+        const base = MEM_COLORS[q.idx];
+        const dark = MEM_DARK[q.idx];
+        const s = q.startAng + MEM_GAP_ANG;
+        const e = q.endAng - MEM_GAP_ANG;
+
+        // Outer arc shape (donut slice)
+        mctx.beginPath();
+        mctx.arc(MEM_CENTER_X, MEM_CENTER_Y, MEM_OUTER_R, s, e);
+        mctx.arc(MEM_CENTER_X, MEM_CENTER_Y, MEM_INNER_R, e, s, true);
+        mctx.closePath();
+        mctx.fillStyle = lit ? base : (hovered ? dark + "ee" : dark);
+        mctx.fill();
+
+        // Border
+        mctx.strokeStyle = lit ? base : base + "55";
+        mctx.lineWidth = lit ? 2.5 : 1.5;
+        mctx.beginPath();
+        mctx.arc(MEM_CENTER_X, MEM_CENTER_Y, MEM_OUTER_R, s, e);
+        mctx.arc(MEM_CENTER_X, MEM_CENTER_Y, MEM_INNER_R, e, s, true);
+        mctx.closePath();
+        mctx.stroke();
+
+        // Label — positioned at midpoint of the arc, between inner and outer radius
+        const midAng = (s + e) / 2;
+        const labelR = (MEM_INNER_R + MEM_OUTER_R) / 2;
+        const lx = MEM_CENTER_X + Math.cos(midAng) * labelR;
+        const ly = MEM_CENTER_Y + Math.sin(midAng) * labelR;
+        mctx.font = lit ? "bold 10px 'Segoe UI'" : "9px 'Segoe UI'";
+        mctx.textAlign = "center";
+        mctx.textBaseline = "middle";
+        mctx.fillStyle = lit ? "#fff" : base + "99";
+        mctx.fillText(MEM_LABELS[q.idx], lx, ly);
+    };
+
+    const memDraw = (state, hoverBtn) => {
+        mctx.fillStyle = "#0a0a0c";
+        mctx.fillRect(0, 0, W, H);
+
+        const myKey = isHost ? 'host' : 'joiner';
+        const theirKey = isHost ? 'joiner' : 'host';
+
+        // ── Scoreboard header ──────────────────────────────────
+        mctx.font = "bold 12px 'Segoe UI'";
+        mctx.textAlign = "left";
+        mctx.fillStyle = "#ff5f1f";
+        mctx.fillText(`YOU  ${state.scores[myKey]}`, 14, 22);
+        mctx.textAlign = "right";
+        mctx.fillStyle = "#3b82f6";
+        mctx.fillText(`${state.scores[theirKey]}  ${peerName || 'PEER'}`, W - 14, 22);
+
+        // Win pips
+        const pipR = 4, pipSpacing = 16;
+        const totalPips = MEM_WIN_SCORE;
+        const pipStartX = W / 2 - ((totalPips - 1) * pipSpacing) / 2;
+        for (let i = 0; i < totalPips; i++) {
+            const px = pipStartX + i * pipSpacing;
+            mctx.beginPath();
+            mctx.arc(px, 20, pipR, 0, Math.PI * 2);
+            if (i < state.scores[myKey]) mctx.fillStyle = "#ff5f1f";
+            else if (i >= totalPips - state.scores[theirKey]) mctx.fillStyle = "#3b82f6";
+            else mctx.fillStyle = "#1f1f23";
+            mctx.fill();
+        }
+
+        // ── Sequence length + turn label ──────────────────────
+        if (state.phase !== 'waiting' && !state.winner) {
+            mctx.textAlign = "center";
+            mctx.font = "bold 11px 'Segoe UI'";
+            mctx.fillStyle = "#3f3f46";
+            mctx.fillText(`SEQUENCE  ${state.sequence.length}`, W / 2, 40);
+
+            let turnText = '', turnColor = '#52525b';
+            if (state.phase === 'showing') {
+                turnText = 'WATCH THE SEQUENCE';
+                turnColor = '#ffd60a';
+            } else if (state.phase === 'input') {
+                const isMyTurn = state.activePlayer === myKey;
+                turnText = isMyTurn ? 'YOUR TURN' : 'THEIR TURN';
+                turnColor = isMyTurn ? '#ff5f1f' : '#3b82f6';
+            } else if (state.phase === 'correct') {
+                turnText = 'CORRECT!';
+                turnColor = '#30d158';
+            } else if (state.phase === 'wrong') {
+                turnText = 'WRONG!';
+                turnColor = '#ff3b30';
+            }
+            mctx.font = "bold 11px 'Segoe UI'";
+            mctx.fillStyle = turnColor;
+            mctx.fillText(turnText, W / 2, 54);
+        }
+
+        // ── Centre hub circle ──────────────────────────────────
+        mctx.beginPath();
+        mctx.arc(MEM_CENTER_X, MEM_CENTER_Y, MEM_INNER_R - 2, 0, Math.PI * 2);
+        mctx.fillStyle = "#111114";
+        mctx.fill();
+        mctx.strokeStyle = "#27272a";
+        mctx.lineWidth = 1.5;
+        mctx.stroke();
+
+        // ── 4 Simon quadrant buttons ──────────────────────────
+        const isMyTurn = state.phase === 'input' && state.activePlayer === myKey;
+        for (const q of MEM_QUADS) {
+            const lit = (state.phase === 'showing' || state.phase === 'input') && state.litIdx === q.idx;
+            const hov = isMyTurn && hoverBtn === q.idx && !lit;
+            memDrawQuad(q, lit, hov);
+        }
+
+        // ── Input progress dots ────────────────────────────────
+        if (state.phase === 'input' && state.sequence.length > 0) {
+            const dotSpacing = Math.min(14, (W - 80) / state.sequence.length);
+            const totalW = (state.sequence.length - 1) * dotSpacing;
+            const startX = W / 2 - totalW / 2;
+            const dotY = H - 20;
+            for (let i = 0; i < state.sequence.length; i++) {
+                const px = startX + i * dotSpacing;
+                mctx.beginPath();
+                mctx.arc(px, dotY, 3.5, 0, Math.PI * 2);
+                if (i < state.inputIndex) mctx.fillStyle = MEM_COLORS[state.sequence[i]];
+                else if (i === state.inputIndex) mctx.fillStyle = "#52525b";
+                else mctx.fillStyle = "#1f1f23";
+                mctx.fill();
+            }
+        }
+
+        // ── Waiting / start prompt ─────────────────────────────
+        if (state.phase === 'waiting') {
+            if (isHost) {
+                const bw = 120, bh = 36, bx = W / 2 - 60, by = H - 54;
+                const hov = hoverBtn === 99;
+                mctx.fillStyle = hov ? "#ff5f1f" : "#1a0a00";
+                mctx.strokeStyle = "#ff5f1f";
+                mctx.lineWidth = 1.5;
+                mctx.beginPath();
+                mctx.roundRect(bx, by, bw, bh, 8);
+                mctx.fill();
+                mctx.stroke();
+                mctx.font = "bold 12px 'Segoe UI'";
+                mctx.textAlign = "center";
+                mctx.textBaseline = "middle";
+                mctx.fillStyle = hov ? "#000" : "#ff5f1f";
+                mctx.fillText("▶  START GAME", W / 2, by + bh / 2);
+                mctx.textBaseline = "alphabetic";
+            } else {
+                mctx.font = "12px 'Segoe UI'";
+                mctx.textAlign = "center";
+                mctx.textBaseline = "alphabetic";
+                mctx.fillStyle = "#3f3f46";
+                mctx.fillText("Waiting for host to start...", W / 2, H - 38);
+            }
+        }
+
+        // ── Flash feedback overlay ─────────────────────────────
+        if (state.flashResult) {
+            mctx.fillStyle = state.flashResult === 'good'
+                ? "rgba(48,209,88,0.15)"
+                : "rgba(255,59,48,0.15)";
+            mctx.fillRect(0, 0, W, H);
+        }
+
+        // ── Game-over overlay ──────────────────────────────────
+        if (state.winner) {
+            mctx.fillStyle = "rgba(0,0,0,0.72)";
+            mctx.fillRect(0, 0, W, H);
+            mctx.textAlign = "center";
+            mctx.textBaseline = "alphabetic";
+            const isIWinner = state.winner === myKey;
+            mctx.font = "bold 40px 'Segoe UI'";
+            mctx.fillStyle = isIWinner ? "#ff5f1f" : "#3b82f6";
+            mctx.fillText(isIWinner ? "YOU WIN!" : "YOU LOSE!", W / 2, H / 2 - 12);
+            mctx.font = "13px 'Segoe UI'";
+            mctx.fillStyle = "#52525b";
+            mctx.fillText(`${state.scores[myKey]} — ${state.scores[theirKey]}`, W / 2, H / 2 + 18);
+            if (state.restartCountdown && state.restartCountdown > 0) {
+                mctx.fillText(`New game in ${state.restartCountdown}...`, W / 2, H / 2 + 42);
+            }
+        }
+    };
+
+    const memRenderLoop = () => {
+        memDraw(memState, memHoverBtn);
+        memAnimFrame = requestAnimationFrame(memRenderLoop);
+    };
+
+    // Host: show the current sequence step by step, then flip to input
+    const memShowSequence = () => {
+        if (!isHost) return;
+        memState.phase = 'showing';
+        memState.litIdx = -1;
+        memState.showStep = 0;
+        if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+
+        const doStep = () => {
+            if (currentGame !== 'memory') return;
+            const step = memState.showStep;
+            if (step >= memState.sequence.length) {
+                // All steps shown — now player inputs
+                memState.litIdx = -1;
+                memState.phase = 'input';
+                memState.inputIndex = 0;
+                if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+                return;
+            }
+            // Light up tile
+            memState.litIdx = memState.sequence[step];
+            if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+
+            memShowTimer = setTimeout(() => {
+                // Turn off tile
+                memState.litIdx = -1;
+                memState.showStep++;
+                if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+                memShowTimer = setTimeout(doStep, MEM_GAP_MS);
+            }, MEM_SHOW_MS);
+        };
+
+        // Small lead-in pause
+        memShowTimer = setTimeout(doStep, 500);
+    };
+
+    // Host: start or continue — add one step and show sequence
+    const memNextRound = () => {
+        if (!isHost) return;
+        const nextColor = Math.floor(Math.random() * 4);
+        memState.sequence.push(nextColor);
+        memShowSequence();
+    };
+
+    // Host: a button was pressed (either directly or via joiner message)
+    const memHandlePress = (btnIdx) => {
+        if (!isHost) return;
+        if (memState.phase !== 'input') return;
+        const myKey = isHost ? 'host' : 'joiner';
+
+        // Flash the tile briefly
+        memState.litIdx = btnIdx;
+        if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+
+        memShowTimer = setTimeout(() => {
+            if (currentGame !== 'memory') return;
+            memState.litIdx = -1;
+
+            const expected = memState.sequence[memState.inputIndex];
+
+            if (btnIdx === expected) {
+                // Correct press
+                memState.inputIndex++;
+                if (memState.inputIndex >= memState.sequence.length) {
+                    // Completed whole sequence!
+                    memState.flashResult = 'good';
+                    memState.phase = 'correct';
+                    if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+
+                    memShowTimer = setTimeout(() => {
+                        if (currentGame !== 'memory') return;
+                        memState.flashResult = null;
+                        // Switch active player
+                        memState.activePlayer = memState.activePlayer === 'host' ? 'joiner' : 'host';
+                        memNextRound();
+                    }, 700);
+                } else {
+                    // More steps to go
+                    if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+                }
+            } else {
+                // Wrong press — other player scores
+                memState.flashResult = 'bad';
+                memState.phase = 'wrong';
+                const scorer = memState.activePlayer === 'host' ? 'joiner' : 'host';
+                memState.scores[scorer]++;
+
+                if (memState.scores[scorer] >= MEM_WIN_SCORE) {
+                    memState.winner = scorer;
+                    if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+                    memTriggerRestart();
+                } else {
+                    if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+                    memShowTimer = setTimeout(() => {
+                        if (currentGame !== 'memory') return;
+                        memState.flashResult = null;
+                        // Scorer gets to go next, fresh sequence
+                        memState.activePlayer = scorer;
+                        memState.sequence = [];
+                        memNextRound();
+                    }, 900);
+                }
+            }
+        }, 140);
+    };
+
+    const memTriggerRestart = () => {
+        if (memRestartTimer) return;
+        memState.restartCountdown = 3;
+        if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+        const tick = () => {
+            if (currentGame !== 'memory') return;
+            memState.restartCountdown--;
+            if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+            if (memState.restartCountdown <= 0) {
+                memRestartTimer = null;
+                const fresh = memInitState({ host: 0, joiner: 0 });
+                memState = fresh;
+                if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+            } else {
+                memRestartTimer = setTimeout(tick, 1000);
+            }
+        };
+        memRestartTimer = setTimeout(tick, 1000);
+    };
+
+    const startMemory = () => {
+        currentGame = 'memory';
+        leaveBtn.style.display = "flex";
+        allViews().forEach(v => v.style.display = "none");
+        memC.style.display = "block";
+        allIcons().forEach(i => { i.style.opacity = "0.4"; i.setAttribute('active', 'false'); });
+        iG.style.opacity = "1"; iG.setAttribute('active', 'true');
+
+        if (isHost) {
+            memState = memInitState();
+            if (isConnected()) dc.send("ME" + JSON.stringify(memState));
+        }
+
+        if (memAnimFrame) cancelAnimationFrame(memAnimFrame);
+        memAnimFrame = requestAnimationFrame(memRenderLoop);
+    };
+
+    const stopMemory = () => {
+        if (memShowTimer) { clearTimeout(memShowTimer); memShowTimer = null; }
+        if (memRestartTimer) { clearTimeout(memRestartTimer); memRestartTimer = null; }
+        if (memAnimFrame) { cancelAnimationFrame(memAnimFrame); memAnimFrame = null; }
+        memState = memInitState();
+        memHoverBtn = -1;
+        mctx.fillStyle = "#0a0a0c"; mctx.fillRect(0, 0, W, H);
+        if (currentGame === 'memory') { currentGame = null; leaveBtn.style.display = "none"; }
+    };
+
+    // Click handler for Memory canvas
+    memC.onclick = (e) => {
+        if (currentGame !== 'memory') return;
+
+        const rect = memC.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const myKey = isHost ? 'host' : 'joiner';
+
+        // START button (host only, waiting phase)
+        if (memState.phase === 'waiting' && isHost) {
+            const bw = 120, bh = 36, bx = W / 2 - 60, by = H - 54;
+            if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+                memState.activePlayer = 'host';
+                memNextRound();
+                return;
+            }
+        }
+
+        // Check colour buttons during input phase (only active player)
+        if (memState.phase === 'input' && memState.activePlayer === myKey) {
+            for (const q of MEM_QUADS) {
+                if (memQuadHit(q, mx, my)) {
+                    const i = q.idx;
+                    if (isHost) {
+                        memHandlePress(i);
+                    } else {
+                        if (isConnected()) dc.send("MEB" + i);
+                    }
+                    return;
+                }
+            }
+        }
+    };
+
+    memC.onmousemove = (e) => {
+        if (currentGame !== 'memory') return;
+        const rect = memC.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const myKey = isHost ? 'host' : 'joiner';
+
+        let hit = -1;
+
+        // Check START button
+        if (memState.phase === 'waiting' && isHost) {
+            const bw = 120, bh = 36, bx = W / 2 - 60, by = H - 54;
+            if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+                hit = 99;
+            }
+        }
+
+        // Check colour buttons
+        if (memState.phase === 'input' && memState.activePlayer === myKey) {
+            for (const q of MEM_QUADS) {
+                if (memQuadHit(q, mx, my)) {
+                    hit = q.idx;
+                    break;
+                }
+            }
+        }
+
+        memHoverBtn = hit;
+        memC.style.cursor = hit >= 0 ? "pointer" : "default";
+    };
+
+    memC.onmouseleave = () => {
+        memHoverBtn = -1;
+        if (currentGame === 'memory') memC.style.cursor = "default";
+    };
+
+    // ============================================================
     //  DATA CHANNEL
     // ============================================================
 
@@ -1854,7 +2299,8 @@
                         : gameName === "ttt" ? "Tic Tac Toe"
                             : gameName === "c4" ? "Connect 4"
                                 : gameName === "rps" ? "Rock Paper Scissors"
-                                    : gameName;
+                                    : gameName === "memory" ? "Memory"
+                                        : gameName;
                 showToast(senderName, prettyName,
                     () => {
                         dc.send("GINVITE_ACCEPT:" + gameName);
@@ -1863,6 +2309,7 @@
                         else if (gameName === "ttt") startTTT();
                         else if (gameName === "c4") startC4();
                         else if (gameName === "rps") startRPS();
+                        else if (gameName === "memory") startMemory();
                     },
                     () => { dc.send("GINVITE_DECLINE:" + gameName); }
                 );
@@ -1876,6 +2323,7 @@
                 else if (gameName === "ttt") startTTT();
                 else if (gameName === "c4") startC4();
                 else if (gameName === "rps") startRPS();
+                else if (gameName === "memory") startMemory();
                 return;
             }
             if (raw.startsWith("GINVITE_DECLINE:")) {
@@ -1890,6 +2338,7 @@
                 if (currentGame === 'ttt') stopTTT();
                 if (currentGame === 'c4') stopC4();
                 if (currentGame === 'rps') stopRPS();
+                if (currentGame === 'memory') stopMemory();
                 setTab(gameV, iG);
                 showInfo((peerName || "Other player") + " left the game.");
                 return;
@@ -1956,37 +2405,51 @@
                 }
             }
 
-            // Rock Paper Scissors — full state from host
+            // Rock Paper Scissors
             if (t === "R" && d[0] !== "M") {
                 if (!isHost) {
                     const incoming = JSON.parse(d);
                     const localFrame = rpsState.animFrame;
                     const prevPhase = rpsState.phase;
-                    const prevShakeStart = rpsState.shakeStartTime; // preserve re-anchored time
+                    const prevShakeStart = rpsState.shakeStartTime;
                     rpsState = incoming;
                     rpsState.animFrame = localFrame;
                     rpsState.restartTimer = null;
-                    // Re-anchor shakeStartTime to local performance.now() timeline
-                    // (host sends Date.now() which is a totally different timebase)
                     if (incoming.phase === 'shake') {
-                        // First shake message: anchor now. Subsequent: keep our anchored value.
                         rpsState.shakeStartTime = prevPhase === 'shake' ? prevShakeStart : performance.now();
                     }
-                    // Joiner tracks reveal start locally when phase flips
                     if ((incoming.phase === 'reveal' || incoming.phase === 'result') && prevPhase === 'shake') {
                         rpsRevealStart = performance.now();
                     }
                 }
             }
-            // Joiner's choice → host applies it
             if (raw.startsWith("RM")) {
                 if (isHost) {
-                    const choice = raw.slice(2); // 'R', 'P', or 'S'
+                    const choice = raw.slice(2);
                     if (rpsState.phase === 'choose' && !rpsState.joinerReady) {
                         rpsState.joinerChoice = choice;
                         rpsState.joinerReady = true;
                         rpsCheckBothReady();
                         if (isConnected()) dc.send("R" + JSON.stringify(rpsState));
+                    }
+                }
+            }
+
+            // Memory — full state from host
+            if (raw.startsWith("ME") && !raw.startsWith("MEB")) {
+                if (!isHost) {
+                    const incoming = JSON.parse(raw.slice(2));
+                    const localFrame = memAnimFrame;
+                    memState = incoming;
+                    memAnimFrame = localFrame;
+                }
+            }
+            // Joiner's button press → host
+            if (raw.startsWith("MEB")) {
+                if (isHost) {
+                    const btnIdx = parseInt(raw.slice(3));
+                    if (memState.phase === 'input' && memState.activePlayer === 'joiner') {
+                        memHandlePress(btnIdx);
                     }
                 }
             }
@@ -2048,6 +2511,15 @@
         dc.send("GINVITE:rps:" + userName);
     };
 
+    memTile.onclick = () => {
+        if (!isConnected()) return;
+        waitSub.textContent = "Invite sent to " + (peerName || "peer");
+        allViews().forEach(v => v.style.display = "none");
+        waitV.style.display = "flex";
+        leaveBtn.style.display = "none";
+        dc.send("GINVITE:memory:" + userName);
+    };
+
     // ============================================================
     //  KEYBOARD INPUT
     // ============================================================
@@ -2076,13 +2548,34 @@
             if (!isHost && isConnected()) dc.send("K" + JSON.stringify(dir));
         }
 
-        // RPS keyboard shortcuts: R = Rock, P = Paper, S = Scissors
         if (currentGame === 'rps' && rpsState.phase === 'choose') {
             const keyMap = { 'r': 'R', 'p': 'P', 's': 'S', 'R': 'R', 'P': 'P', 'S': 'S' };
             const choice = keyMap[e.key];
             if (choice) {
                 e.preventDefault();
                 rpsPickChoice(choice);
+            }
+        }
+
+        // Memory keyboard shortcuts: 1/Q=Red, 2/W=Green, 3/A=Blue, 4/S=Yellow
+        if (currentGame === 'memory') {
+            const myKey = isHost ? 'host' : 'joiner';
+            if (memState.phase === 'input' && memState.activePlayer === myKey) {
+                const memKeyMap = { '1': 0, 'q': 0, 'Q': 0, '2': 1, 'w': 1, 'W': 1, '3': 2, 'a': 2, 'A': 2, '4': 3, 's': 3, 'S': 3 };
+                const btnIdx = memKeyMap[e.key];
+                if (btnIdx !== undefined) {
+                    e.preventDefault();
+                    if (isHost) {
+                        memHandlePress(btnIdx);
+                    } else {
+                        if (isConnected()) dc.send("MEB" + btnIdx);
+                    }
+                }
+            }
+            if (memState.phase === 'waiting' && isHost && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                memState.activePlayer = 'host';
+                memNextRound();
             }
         }
     });
